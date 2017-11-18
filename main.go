@@ -7,114 +7,126 @@ import (
 
 	"github.com/iwanbk/gobeanstalk"
 	"gopkg.in/yaml.v2"
+	v1beta2 "k8s.io/api/apps/v1beta2"
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	appv1b2 "k8s.io/client-go/kubernetes/typed/apps/v1beta2"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 )
 
 func int32Ptr(i int32) *int32 { return &i }
 
+func panicError(msg string, err error) {
+	panic(fmt.Errorf(msg+": %v", err))
+}
+
 type stats struct {
-	Ready    int `yaml:"current-jobs-ready"`
-	Watching int `yaml:"current-watching"`
+	Ready    int32 `yaml:"current-jobs-ready"`
+	Watching int32 `yaml:"current-watching"`
 }
 
 func main() {
-	k8s()
-}
+	bs := initBeanstalkd()
+	defer bs.Quit()
 
-func _main() {
-	bs, err := gobeanstalk.Dial("localhost:11300")
-	if err != nil {
-		log.Fatal(err)
-	}
+	spawner := initSpawner()
 
 	for {
-		tubesStats(bs, func(stats *stats) {
-			fmt.Printf("Jobs ready: %d\n", stats.Ready)
-			fmt.Printf("Watching: %d\n", stats.Watching)
-		})
-		time.Sleep(1 * time.Second)
+		tubesStats(bs, spawner)
+		time.Sleep(5 * time.Second)
 	}
 }
 
-func tubesStats(bs *gobeanstalk.Conn, do func(*stats)) {
+func initBeanstalkd() *gobeanstalk.Conn {
+	bs, err := gobeanstalk.Dial("beanstalkd:11300")
+	if err != nil {
+		panicError("Can't initialize Beanstalkd", err)
+	}
+	return bs
+}
+
+func tubesStats(bs *gobeanstalk.Conn, do func(string, *stats)) {
 	tubesYaml, err := bs.ListTubes()
 	if err != nil {
-		log.Fatal(err)
+		panicError("Can't retrieve tubes", err)
 	}
 
 	var tubes []string
 	err = yaml.UnmarshalStrict(tubesYaml, &tubes)
 	if err != nil {
-		log.Fatal(err)
+		panicError("Wrong tube response", err)
 	}
 
 	for _, t := range tubes {
 		statsYaml, err := bs.StatsTube(t)
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Tube `%s` - can't fetch stats: %v\n", t, err)
+			continue
 		}
 
 		var stats stats
 		err = yaml.Unmarshal(statsYaml, &stats)
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Tube `%s` - can't unmarshal: %v\n", t, err)
+			continue
 		}
-		do(&stats)
+		do(t, &stats)
 	}
 }
 
-func k8s() {
-	// creates the in-cluster config
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(err.Error())
-	}
-	// creates the clientset
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err.Error())
-	}
-	for {
-		rsClient := clientset.
-			AppsV1beta2().
-			ReplicaSets(apiv1.NamespaceDefault)
+func initSpawner() func(string, *stats) {
+	rsClient := initReplicaSetsClient()
 
+	return func(tube string, stats *stats) {
 		retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			rs, err := rsClient.Get("test", metav1.GetOptions{})
+			rs, err := getReplicaSet(rsClient, tube)
 			if err != nil {
-				panic(fmt.Errorf("Failed to get latest version of Deployment: %v", err))
+				log.Printf("Tube `%s` - failed to get ReplicaSet: %v\n", tube, err)
+				return err
 			}
 
-			rs.Spec.Replicas = int32Ptr(*rs.Spec.Replicas + 1)
+			rs.Spec.Replicas = calcReplicas(*rs.Spec.Replicas, stats.Ready)
 			_, err = rsClient.Update(rs)
 			return err
 		})
-
-		pods, err := clientset.CoreV1().Pods("").List(metav1.ListOptions{})
-		if err != nil {
-			panic(err.Error())
-		}
-		fmt.Printf("There are %d pods in the cluster\n", len(pods.Items))
-
-		// Examples for error handling:
-		// - Use helper functions like e.g. errors.IsNotFound()
-		// - And/or cast to StatusError and use its properties like e.g. ErrStatus.Message
-		_, err = clientset.CoreV1().Pods("default").Get("example-xxxxx", metav1.GetOptions{})
-		if errors.IsNotFound(err) {
-			fmt.Printf("Pod not found\n")
-		} else if statusError, isStatus := err.(*errors.StatusError); isStatus {
-			fmt.Printf("Error getting pod %v\n", statusError.ErrStatus.Message)
-		} else if err != nil {
-			panic(err.Error())
-		} else {
-			fmt.Printf("Found pod\n")
-		}
-
-		time.Sleep(10 * time.Second)
 	}
+}
+
+func getReplicaSet(rsClient appv1b2.ReplicaSetInterface, tube string) (*v1beta2.ReplicaSet, error) {
+	replicaName := "producer-" + tube
+	rs, err := rsClient.Get(replicaName, metav1.GetOptions{})
+	if err == nil {
+		return rs, nil
+	}
+	return nil, err
+}
+
+func calcReplicas(cur int32, ready int32) *int32 {
+	if ready == 0 {
+		return int32Ptr(0)
+	}
+
+	n := ready/10 - cur
+	if n < 0 {
+		return int32Ptr(1)
+	}
+	return &n
+}
+
+func initReplicaSetsClient() appv1b2.ReplicaSetInterface {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		panicError("Can't access k8s API", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panicError("Can't initialize k8s client", err)
+	}
+
+	return clientset.
+		AppsV1beta2().
+		ReplicaSets(apiv1.NamespaceDefault)
 }
