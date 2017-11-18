@@ -16,8 +16,6 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-func int32Ptr(i int32) *int32 { return &i }
-
 func panicError(msg string, err error) {
 	panic(fmt.Errorf(msg+": %v", err))
 }
@@ -87,7 +85,7 @@ func initSpawner() func(string, *stats) {
 				return err
 			}
 
-			rs.Spec.Replicas = calcReplicas(*rs.Spec.Replicas, stats.Ready)
+			rs.Spec.Replicas = calcReplicas(stats.Ready)
 			_, err = rsClient.Update(rs)
 			return err
 		})
@@ -103,15 +101,18 @@ func getReplicaSet(rsClient appv1b2.ReplicaSetInterface, tube string) (*v1beta2.
 	return nil, err
 }
 
-func calcReplicas(cur int32, ready int32) *int32 {
+func int32Ptr(i int32) *int32 {
+	return &i
+}
+
+func calcReplicas(ready int32) *int32 {
+	// n default to 0
+	var n int32
 	if ready == 0 {
-		return int32Ptr(0)
+		return &n
 	}
 
-	n := ready/10 - cur
-	if n < 0 {
-		return int32Ptr(1)
-	}
+	n = ready / 10
 	return &n
 }
 
