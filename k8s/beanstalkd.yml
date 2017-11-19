@@ -1,0 +1,16 @@
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  name: beanstalkd
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: beanstalkd
+    spec:
+      containers:
+      - name: beanstalkd
+        image: "jonbaldie/beanstalkd:latest"
+        ports:
+            - containerPort: 11300

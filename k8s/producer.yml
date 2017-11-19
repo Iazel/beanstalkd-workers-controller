@@ -1,0 +1,14 @@
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  name: producer
+spec:
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: producer
+    spec:
+      containers:
+      - name: producer
+        image: "beanstalkd-producer:1.0"

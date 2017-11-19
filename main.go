@@ -98,15 +98,15 @@ func getReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string) (*v1beta1.
 		return rs, rsClient.Update, nil
 	}
 
-	rs, err = createReplicaSet(rsClient, tube, replicaName)
+	rs, err = setupReplicaSet(rsClient, tube, replicaName)
 	if err != nil {
 		return nil, nil, err
 	}
 	return rs, rsClient.Create, nil
 }
 
-func createReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string, name string) (*v1beta1.ReplicaSet, error) {
-	yaml, err := ioutil.ReadFile("consumer.yml")
+func setupReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string, name string) (*v1beta1.ReplicaSet, error) {
+	yaml, err := ioutil.ReadFile("./consumer.yml")
 	if err != nil {
 		return nil, err
 	}

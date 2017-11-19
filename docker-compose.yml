@@ -1,0 +1,11 @@
+version: "2.0"
+services:
+    #app:
+    #build: .
+    #depends_on:
+    #- beanstalkd
+
+    beanstalkd:
+        image: "jonbaldie/beanstalkd:latest"
+        ports:
+            - '11300:11300'

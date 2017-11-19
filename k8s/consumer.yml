@@ -13,5 +13,5 @@ spec:
       - name: consumer
         image: "beanstalkd-consumer:1.0"
         env:
-          - name: QUEUE
+        - name: QUEUE
           value: placeholder

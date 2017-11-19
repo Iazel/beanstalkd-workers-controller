@@ -1,0 +1,6 @@
+version: "2.0"
+services:
+    app:
+      build: compile
+      volumes:
+        - "./:/go/src/app"
