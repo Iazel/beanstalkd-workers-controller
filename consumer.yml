@@ -1,0 +1,17 @@
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  name: consumer
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: consumer
+    spec:
+      containers:
+      - name: consumer
+        image: "beanstalkd-consumer:1.0"
+        env:
+          - name: QUEUE
+          value: placeholder

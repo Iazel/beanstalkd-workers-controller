@@ -2,22 +2,27 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"time"
 
+	v1beta1 "k8s.io/api/extensions/v1beta1"
+	extv1b1 "k8s.io/client-go/kubernetes/typed/extensions/v1beta1"
+
 	"github.com/iwanbk/gobeanstalk"
 	"gopkg.in/yaml.v2"
-	v1beta2 "k8s.io/api/apps/v1beta2"
-	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	appv1b2 "k8s.io/client-go/kubernetes/typed/apps/v1beta2"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 )
 
-func panicError(msg string, err error) {
-	panic(fmt.Errorf(msg+": %v", err))
+func checkFatalError(msg string, err error) {
+	if err != nil {
+		panic(fmt.Errorf(msg+": %v", err))
+	}
 }
 
 type stats struct {
@@ -39,23 +44,17 @@ func main() {
 
 func initBeanstalkd() *gobeanstalk.Conn {
 	bs, err := gobeanstalk.Dial("beanstalkd:11300")
-	if err != nil {
-		panicError("Can't initialize Beanstalkd", err)
-	}
+	checkFatalError("Can't initialize Beanstalkd", err)
 	return bs
 }
 
 func tubesStats(bs *gobeanstalk.Conn, do func(string, *stats)) {
 	tubesYaml, err := bs.ListTubes()
-	if err != nil {
-		panicError("Can't retrieve tubes", err)
-	}
+	checkFatalError("Can't retrieve tubes", err)
 
 	var tubes []string
 	err = yaml.UnmarshalStrict(tubesYaml, &tubes)
-	if err != nil {
-		panicError("Wrong tube response", err)
-	}
+	checkFatalError("Wrong tube response", err)
 
 	for _, t := range tubes {
 		statsYaml, err := bs.StatsTube(t)
@@ -79,30 +78,53 @@ func initSpawner() func(string, *stats) {
 
 	return func(tube string, stats *stats) {
 		retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			rs, err := getReplicaSet(rsClient, tube)
+			rs, finalize, err := getReplicaSet(rsClient, tube)
 			if err != nil {
 				log.Printf("Tube `%s` - failed to get ReplicaSet: %v\n", tube, err)
 				return err
 			}
 
 			rs.Spec.Replicas = calcReplicas(stats.Ready)
-			_, err = rsClient.Update(rs)
+			_, err = finalize(rs)
 			return err
 		})
 	}
 }
 
-func getReplicaSet(rsClient appv1b2.ReplicaSetInterface, tube string) (*v1beta2.ReplicaSet, error) {
-	replicaName := "producer-" + tube
+func getReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string) (*v1beta1.ReplicaSet, func(*v1beta1.ReplicaSet) (*v1beta1.ReplicaSet, error), error) {
+	replicaName := "consumer-" + tube
 	rs, err := rsClient.Get(replicaName, metav1.GetOptions{})
 	if err == nil {
-		return rs, nil
+		return rs, rsClient.Update, nil
 	}
-	return nil, err
+
+	rs, err = createReplicaSet(rsClient, tube, replicaName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rs, rsClient.Create, nil
 }
 
-func int32Ptr(i int32) *int32 {
-	return &i
+func createReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string, name string) (*v1beta1.ReplicaSet, error) {
+	yaml, err := ioutil.ReadFile("consumer.yml")
+	if err != nil {
+		return nil, err
+	}
+
+	schema, _, err := scheme.Codecs.UniversalDeserializer().Decode(yaml, nil, nil)
+	rsSchema := castReplicaSetSchema(schema)
+	rsSchema.ObjectMeta.Name = name
+	rsSchema.Spec.Template.Spec.Containers[0].Env[0].Value = tube
+	return rsSchema, nil
+}
+
+func castReplicaSetSchema(schema interface{}) *v1beta1.ReplicaSet {
+	fmt.Printf("%#v\n", schema)
+	rsSchema, ok := schema.(*v1beta1.ReplicaSet)
+	if ok {
+		return rsSchema
+	}
+	panic("Schema is not a ReplicaSet!")
 }
 
 func calcReplicas(ready int32) *int32 {
@@ -112,22 +134,25 @@ func calcReplicas(ready int32) *int32 {
 		return &n
 	}
 
-	n = ready / 10
+	n = lowerBound(1, ready/10)
 	return &n
 }
 
-func initReplicaSetsClient() appv1b2.ReplicaSetInterface {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panicError("Can't access k8s API", err)
+func lowerBound(limit int32, n int32) int32 {
+	if limit <= n {
+		return limit
 	}
+	return n
+}
+
+func initReplicaSetsClient() extv1b1.ReplicaSetInterface {
+	config, err := rest.InClusterConfig()
+	checkFatalError("Can't access k8s API", err)
 
 	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panicError("Can't initialize k8s client", err)
-	}
+	checkFatalError("Can't initialize k8s client", err)
 
 	return clientset.
-		AppsV1beta2().
-		ReplicaSets(apiv1.NamespaceDefault)
+		ExtensionsV1beta1().
+		ReplicaSets(v1.NamespaceDefault)
 }
