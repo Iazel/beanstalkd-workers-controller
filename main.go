@@ -85,6 +85,9 @@ func initSpawner() func(string, *stats) {
 			}
 
 			rs.Spec.Replicas = calcReplicas(stats.Ready)
+			log.Printf(
+				"\nTube %s\nJobs ready: %d\nSetting replicas to: %d\n\n",
+				tube, stats.Ready, *rs.Spec.Replicas)
 			_, err = finalize(rs)
 			return err
 		})
@@ -119,7 +122,6 @@ func setupReplicaSet(rsClient extv1b1.ReplicaSetInterface, tube string, name str
 }
 
 func castReplicaSetSchema(schema interface{}) *v1beta1.ReplicaSet {
-	fmt.Printf("%#v\n", schema)
 	rsSchema, ok := schema.(*v1beta1.ReplicaSet)
 	if ok {
 		return rsSchema
@@ -139,7 +141,7 @@ func calcReplicas(ready int32) *int32 {
 }
 
 func lowerBound(limit int32, n int32) int32 {
-	if limit <= n {
+	if n <= limit {
 		return limit
 	}
 	return n
